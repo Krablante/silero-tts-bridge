@@ -1,0 +1,22 @@
+name: Purge v0.1.0 package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete exact container package version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids="$(gh api --paginate /users/Krablante/packages/container/silero-tts-bridge/versions \
+            --jq '.[] | select(any(.metadata.container.tags[]?; . == "v0.1.0")) | .id')"
+          count="$(printf '%s\n' "$ids" | grep -cE '^[0-9]+$' || true)"
+          test "$count" -eq 1
+          gh api --method DELETE "/users/Krablante/packages/container/silero-tts-bridge/versions/$ids"
