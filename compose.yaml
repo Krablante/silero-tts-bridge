@@ -1,0 +1,24 @@
+services:
+  silero-tts-bridge:
+    image: ${TTS_IMAGE:-ghcr.io/krablante/silero-tts-bridge:latest}
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${TTS_ENV_FILE:-.env}
+    ports:
+      - "${TTS_BIND_ADDRESS:-127.0.0.1}:${TTS_PORT:-8000}:8000"
+    volumes:
+      - ${TTS_MODELS_PATH:-silero-models}:/models
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+
+volumes:
+  silero-models:
