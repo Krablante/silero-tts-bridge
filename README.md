@@ -75,12 +75,16 @@ Reports readiness, the fixed model ID, supported voices, and current queue occup
 
 Supported values:
 
-- model: `silero-ru-v5.5` or compatibility alias `v5_5_ru`;
+- model: `silero-ru-v5.5`;
 - voices: `xenia`, `eugene`, `aidar`, `baya`, `kseniya`;
 - formats: `opus`/`ogg`, `mp3`, `wav`;
 - speed: from `0.25` through `4.0`.
 
 Responses are binary audio. Validation errors use FastAPI's normal JSON error format. A full queue returns HTTP 429 with `Retry-After: 5`.
+
+Input is normalized without destroying blank-line paragraph boundaries. Every paragraph ends the current synthesis chunk,
+so a caller-provided topic/server intro remains separate from the following body. Sentences inside a paragraph are still
+combined up to `SILERO_MAX_CHUNK_CHARS`; oversized sentences fall back to punctuation and word boundaries.
 
 ## Authentication And Network Exposure
 

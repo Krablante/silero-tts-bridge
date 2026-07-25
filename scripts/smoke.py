@@ -18,7 +18,10 @@ def main() -> int:
         data=json.dumps(
             {
                 "model": "silero-ru-v5.5",
-                "input": "Проверка синтеза речи прошла успешно.",
+                "input": (
+                    "Пришло новое сообщение из топика, Проверка, на сервере, toma.\n\n"
+                    "Проверка синтеза речи прошла успешно."
+                ),
                 "voice": "xenia",
                 "response_format": "opus",
                 "speed": 1,

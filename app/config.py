@@ -6,7 +6,6 @@ from pathlib import Path
 
 
 MODEL_ID = "silero-ru-v5.5"
-MODEL_ALIASES = frozenset({MODEL_ID, "v5_5_ru"})
 VOICES = ("xenia", "eugene", "aidar", "baya", "kseniya")
 
 

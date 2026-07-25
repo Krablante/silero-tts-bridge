@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from .config import MODEL_ALIASES, MODEL_ID, VOICES, Settings
+from .config import MODEL_ID, VOICES, Settings
 from .engine import SileroEngine, SynthesisError
 from .service import QueueFullError, SynthesisService
 
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Silero TTS Bridge",
-    version="0.1.0",
+    version="0.1.1",
     description="CPU-only OpenAI-compatible speech API for Silero RU v5.5.",
     lifespan=lifespan,
 )
@@ -88,7 +88,7 @@ async def health(request: Request) -> dict[str, object]:
 @app.post("/v1/audio/speech", dependencies=[Depends(authorize)])
 async def create_speech(payload: SpeechRequest, request: Request) -> Response:
     settings, service = runtime(request)
-    if payload.model not in MODEL_ALIASES:
+    if payload.model != MODEL_ID:
         raise HTTPException(status_code=400, detail=f"model must be {MODEL_ID}")
     if payload.voice not in VOICES:
         raise HTTPException(status_code=400, detail=f"voice must be one of: {', '.join(VOICES)}")

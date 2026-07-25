@@ -17,6 +17,7 @@ from .config import Settings, VOICES
 
 LOGGER = logging.getLogger("silero_tts_bridge.engine")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n+")
 CLAUSE_BREAK_RE = re.compile(r"[,;:]\s+|\s+[—-]\s+")
 
 
@@ -73,7 +74,7 @@ class SileroEngine:
     def synthesize(self, text: str, *, voice: str, response_format: str, speed: float) -> AudioResult:
         if not self.ready:
             raise SynthesisError("Silero model is not loaded")
-        cleaned = " ".join(text.split())
+        cleaned = _normalize_text(text)
         if not cleaned:
             raise SynthesisError("input is empty")
         if len(cleaned) > self.settings.max_input_chars:
@@ -187,6 +188,13 @@ def _atempo_filters(speed: float) -> str:
 
 def _split_text(text: str, max_chars: int) -> list[str]:
     chunks: list[str] = []
+    for paragraph in PARAGRAPH_SPLIT_RE.split(text):
+        chunks.extend(_split_paragraph(paragraph, max_chars))
+    return chunks
+
+
+def _split_paragraph(text: str, max_chars: int) -> list[str]:
+    chunks: list[str] = []
     current = ""
     for sentence in SENTENCE_SPLIT_RE.split(text):
         sentence = sentence.strip()
@@ -210,6 +218,11 @@ def _split_text(text: str, max_chars: int) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def _normalize_text(text: str) -> str:
+    paragraphs = [" ".join(paragraph.split()) for paragraph in PARAGRAPH_SPLIT_RE.split(text)]
+    return "\n\n".join(paragraph for paragraph in paragraphs if paragraph)
 
 
 def _split_long_segment(text: str, max_chars: int) -> list[str]:
