@@ -1,6 +1,10 @@
 .git
 .github
 .env
+.env.*
+*.env
+state
+client-keys.json
 .venv
 __pycache__
 models

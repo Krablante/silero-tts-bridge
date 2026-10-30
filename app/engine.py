@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import io
+import hashlib
+import json
 import logging
 import math
 import re
 import subprocess
+import os
+import threading
+import time
+import tempfile
 import warnings
-import wave
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,10 +28,12 @@ CLAUSE_BREAK_RE = re.compile(r"[,;:]\s+|\s+[—-]\s+")
 
 @dataclass(frozen=True, slots=True)
 class AudioResult:
-    data: bytes
+    path: Path
     media_type: str
     extension: str
     duration_seconds: float
+    size: int
+    sha256: str
 
 
 class SynthesisError(RuntimeError):
@@ -48,13 +55,17 @@ class SileroEngine:
             raise SynthesisError(f"Silero model is missing: {self.settings.model_path}")
         import torch
 
-        torch.set_num_threads(self.settings.cpu_threads)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
             model = torch.package.PackageImporter(str(self.settings.model_path)).load_pickle(
                 "tts_models", "model"
             )
         model.to(torch.device("cpu"))
+        # The model's packaged models/model.py sets this to one at import time.
+        torch.set_num_threads(self.settings.cpu_threads)
+        self.actual_threads = torch.get_num_threads()
+        if self.settings.sample_rate not in {8000, 24000, 48000}:
+            raise SynthesisError("sample_rate must be 8000, 24000 or 48000")
         self._torch = torch
         self._model = model
         available = set(getattr(model, "speakers", ()))
@@ -64,111 +75,134 @@ class SileroEngine:
         LOGGER.info(
             "Silero loaded: model=v5_5_ru device=cpu sample_rate=%s threads=%s",
             self.settings.sample_rate,
-            self.settings.cpu_threads,
+            torch.get_num_threads(),
         )
 
     def warmup(self) -> None:
-        result = self.synthesize("Сервис готов.", voice="xenia", response_format="opus", speed=1.0)
-        LOGGER.info("Silero warmup complete: bytes=%s duration=%.2f", len(result.data), result.duration_seconds)
+        with tempfile.TemporaryDirectory() as directory:
+            frames = self.segment("Сервис готов.", "xenia", Path(directory) / "warmup.flac")
+        LOGGER.info("Silero warmup complete: frames=%s", frames)
 
-    def synthesize(self, text: str, *, voice: str, response_format: str, speed: float) -> AudioResult:
+    @property
+    def threads(self):
+        return getattr(self, "actual_threads", None)
+
+    @property
+    def signature(self):
+        return [self.settings.model_sha256, self.settings.sample_rate, self.settings.intensity, self.settings.peak_ceiling, "accent-homo-yo-1"]
+
+    def segment(self, text: str, voice: str, target: Path) -> int:
         if not self.ready:
             raise SynthesisError("Silero model is not loaded")
-        cleaned = _normalize_text(text)
-        if not cleaned:
-            raise SynthesisError("input is empty")
-        if len(cleaned) > self.settings.max_input_chars:
-            raise SynthesisError(f"input is longer than {self.settings.max_input_chars} characters")
         if voice not in VOICES:
             raise SynthesisError(f"unsupported voice: {voice}")
-        wav, duration = self._render_wav(cleaned, voice)
-        encoded, media_type, extension = self._encode(wav, response_format, speed)
-        if not encoded:
-            raise SynthesisError("FFmpeg returned empty audio")
-        if len(encoded) > self.settings.max_output_bytes:
-            raise SynthesisError("encoded audio exceeds the configured size limit")
-        return AudioResult(encoded, media_type, extension, duration / speed)
-
-    def _render_wav(self, text: str, voice: str) -> tuple[bytes, float]:
         assert self._model is not None
         assert self._torch is not None
-        chunks = _split_text(text, self.settings.max_chunk_chars)
-        audio_parts: list[np.ndarray[Any, np.dtype[np.float32]]] = []
-        silence_samples = int(self.settings.sample_rate * self.settings.silence_seconds)
+        package = self._model.packages[self._model.speaker_to_package[voice]]
+        prepared = package.prepare_text_input(text, "ru")[0]
+        letters = lambda s: "".join(c for c in s.lower() if c.isalpha())
+        if letters(text) != letters(prepared):
+            raise SynthesisError("model_text_loss: model preparation would remove letters")
         with self._torch.inference_mode():
-            for index, chunk in enumerate(chunks):
-                audio = self._model.apply_tts(
-                    text=chunk,
-                    speaker=voice,
-                    sample_rate=self.settings.sample_rate,
-                    put_accent=True,
-                    put_stress_homo=True,
-                    put_yo=True,
-                    put_yo_homo=True,
-                    stress_single_vowel=True,
-                    intensity=self.settings.intensity,
-                )
-                samples = audio.detach().cpu().numpy().astype(np.float32)
-                if not np.isfinite(samples).all():
-                    raise SynthesisError("Silero returned non-finite samples")
-                peak = float(np.max(np.abs(samples))) if samples.size else 0.0
-                if peak > self.settings.peak_ceiling:
-                    samples *= self.settings.peak_ceiling / peak
-                audio_parts.append(samples)
-                if index < len(chunks) - 1 and silence_samples:
-                    audio_parts.append(np.zeros(silence_samples, dtype=np.float32))
-        if not audio_parts:
-            raise SynthesisError("Silero returned empty audio")
-        samples = np.concatenate(audio_parts)
-        pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
-        output = io.BytesIO()
-        with wave.open(output, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(self.settings.sample_rate)
-            wav.writeframes(pcm.tobytes())
-        return output.getvalue(), float(len(samples) / self.settings.sample_rate)
+            audio = self._model.apply_tts(text=text, speaker=voice, sample_rate=self.settings.sample_rate, put_accent=True, put_stress_homo=True, put_yo=True, put_yo_homo=True, stress_single_vowel=True, intensity=self.settings.intensity)
+        samples = audio.detach().cpu().numpy().astype(np.float32)
+        if not samples.size or not np.isfinite(samples).all():
+            raise SynthesisError("Silero returned empty or non-finite samples")
+        peak = float(np.max(np.abs(samples)))
+        if peak <= 1e-7:
+            raise SynthesisError("Silero returned silent audio")
+        if peak > self.settings.peak_ceiling:
+            samples *= self.settings.peak_ceiling / peak
+        self._flac((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes(), target)
+        return len(samples)
 
-    def _encode(self, wav: bytes, response_format: str, speed: float) -> tuple[bytes, str, str]:
-        normalized = response_format.lower()
-        if normalized in {"opus", "ogg"}:
+    def _flac(self, pcm: bytes, target: Path):
+        temporary = target.with_suffix(".tmp.flac")
+        try:
+            result = subprocess.run([self.settings.ffmpeg_bin, "-y", "-nostdin", "-v", "error", "-f", "s16le", "-ar", str(self.settings.sample_rate), "-ac", "1", "-i", "pipe:0", "-c:a", "flac", "-compression_level", "1", str(temporary)], input=pcm, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=self.settings.ffmpeg_timeout_seconds)
+            if result.returncode or temporary.stat().st_size < 100:
+                raise SynthesisError("Lossless fragment encoding failed")
+            with temporary.open("rb") as stream:
+                os.fsync(stream.fileno())
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def assemble(self, parts: list[tuple[Path, int]], directory: Path, response_format: str, speed: float, max_bytes: int, cancelled: threading.Event) -> AudioResult:
+        if not parts:
+            raise SynthesisError("Cannot assemble an empty job")
+        if response_format in {"opus", "ogg"}:
             codec = ["-c:a", "libopus", "-b:a", self.settings.opus_bitrate, "-f", "ogg"]
             media_type, extension = "audio/ogg", "ogg"
-        elif normalized == "mp3":
+        elif response_format == "mp3":
             codec = ["-c:a", "libmp3lame", "-b:a", "128k", "-f", "mp3"]
             media_type, extension = "audio/mpeg", "mp3"
-        elif normalized == "wav":
+        elif response_format == "wav":
             codec = ["-c:a", "pcm_s16le", "-f", "wav"]
             media_type, extension = "audio/wav", "wav"
         else:
             raise SynthesisError("response_format must be opus, ogg, mp3, or wav")
-        command = [
-            self.settings.ffmpeg_bin,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            "pipe:0",
-        ]
+        pause = round(self.settings.sample_rate * self.settings.silence_seconds)
+        silence = directory / "silence.flac"
+        if pause:
+            self._flac(bytes(pause * 2), silence)
+        listing = directory / "concat.txt"
+        def quoted(path):
+            return "file '" + str(path.resolve()).replace("'", "'\\''") + "'\n"
+        with listing.open("w") as out:
+            for i, (path, frames) in enumerate(parts):
+                if not path.is_file() or frames <= 0:
+                    raise SynthesisError("Missing or invalid audio fragment")
+                out.write(quoted(path))
+                if pause and i < len(parts) - 1:
+                    out.write(quoted(silence))
+        expected = (sum(frames for _, frames in parts) + max(0, len(parts) - 1) * pause) / self.settings.sample_rate / speed
+        if response_format == "wav" and expected * self.settings.sample_rate * 2 + 128 > max_bytes:
+            raise SynthesisError("output_limit: WAV would exceed the output budget; choose opus/mp3 or increase the configured budget")
+        command = [self.settings.ffmpeg_bin, "-y", "-nostdin", "-v", "error", "-xerror", "-f", "concat", "-safe", "0", "-i", str(listing), "-map", "0:a:0"]
         filters = _atempo_filters(speed)
         if filters:
             command.extend(["-filter:a", filters])
-        command.extend(["-ar", str(self.settings.sample_rate), "-ac", "1", *codec, "pipe:1"])
+        temporary = directory / ("result.tmp." + extension)
+        command.extend(["-ar", str(self.settings.sample_rate), "-ac", "1", *codec, "-fs", str(max_bytes), str(temporary)])
         try:
-            result = subprocess.run(
-                command,
-                input=wav,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-                timeout=self.settings.ffmpeg_timeout_seconds,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise SynthesisError("FFmpeg audio encoding failed") from exc
-        if result.returncode != 0:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()[-500:]
-            raise SynthesisError(f"FFmpeg audio encoding failed: {detail}")
-        return result.stdout, media_type, extension
+            with (directory / "encode.log").open("wb") as log:
+                process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=log)
+                started = time.monotonic()
+                try:
+                    while process.poll() is None:
+                        if cancelled.wait(.1):
+                            raise SynthesisError("cancelled")
+                        if time.monotonic() - started > self.settings.ffmpeg_timeout_seconds + expected * .1:
+                            raise SynthesisError("FFmpeg encoding timed out")
+                    if process.returncode:
+                        raise SynthesisError("FFmpeg could not decode/assemble every fragment")
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+            metadata = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_name", "-of", "json", str(temporary)], timeout=30))
+            duration = float(metadata["format"]["duration"])
+            size = temporary.stat().st_size
+            if size >= max_bytes or not math.isfinite(duration) or abs(duration - expected) > max(.35, expected * .005):
+                raise SynthesisError("incomplete_audio: encoded duration/size does not match all fragments")
+            digest = hashlib.sha256()
+            with temporary.open("rb") as stream:
+                while data := stream.read(1024 * 1024):
+                    digest.update(data)
+                os.fsync(stream.fileno())
+            target = directory / ("result." + extension)
+            temporary.replace(target)
+            return AudioResult(target, media_type, extension, duration, size, digest.hexdigest())
+        finally:
+            temporary.unlink(missing_ok=True)
+            listing.unlink(missing_ok=True)
+            silence.unlink(missing_ok=True)
+            (directory / "encode.log").unlink(missing_ok=True)
 
 
 def _atempo_filters(speed: float) -> str:

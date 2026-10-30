@@ -27,6 +27,14 @@ class Settings:
     ffmpeg_timeout_seconds: int
     max_output_bytes: int
     warmup: bool
+    state_path: Path
+    keys_file: Path | None
+    max_job_chars: int
+    max_job_output_bytes: int
+    max_queued_chars: int
+    cache_max_bytes: int
+    state_max_bytes: int
+    retention_seconds: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,10 +47,10 @@ class Settings:
             ).strip().lower(),
             max_input_chars=_integer("TTS_MAX_INPUT_CHARS", 12_000, minimum=1),
             max_pending=_integer("TTS_MAX_PENDING", 8, minimum=1),
-            cpu_threads=_integer("SILERO_CPU_THREADS", 6, minimum=1),
+            cpu_threads=_integer("SILERO_CPU_THREADS", 2, minimum=1),
             sample_rate=_integer("SILERO_SAMPLE_RATE", 48_000, minimum=8_000),
-            max_chunk_chars=_integer("SILERO_MAX_CHUNK_CHARS", 300, minimum=20),
-            silence_seconds=_number("SILERO_SILENCE_SECONDS", 0.12, minimum=0),
+            max_chunk_chars=_integer("SILERO_MAX_CHUNK_CHARS", 300, minimum=20, maximum=1000),
+            silence_seconds=_number("SILERO_SILENCE_SECONDS", 0.12, minimum=0, maximum=10),
             intensity=_number("SILERO_INTENSITY", 3.0, minimum=0.1),
             peak_ceiling=_number("SILERO_PEAK_CEILING", 0.98, minimum=0.1, maximum=1.0),
             opus_bitrate=os.getenv("OPUS_BITRATE", "48k").strip() or "48k",
@@ -50,6 +58,14 @@ class Settings:
             ffmpeg_timeout_seconds=_integer("FFMPEG_TIMEOUT_SECONDS", 120, minimum=1),
             max_output_bytes=_integer("TTS_MAX_OUTPUT_BYTES", 20 * 1024 * 1024, minimum=1024),
             warmup=_boolean("TTS_WARMUP", True),
+            state_path=Path(os.getenv("TTS_STATE_PATH", "/state")),
+            keys_file=Path(os.environ["TTS_KEYS_FILE"]) if os.getenv("TTS_KEYS_FILE") else None,
+            max_job_chars=_integer("TTS_MAX_JOB_CHARS", 5_000_000, minimum=1),
+            max_job_output_bytes=_integer("TTS_MAX_JOB_OUTPUT_BYTES", 2 * 1024**3, minimum=1024),
+            max_queued_chars=_integer("TTS_MAX_QUEUED_CHARS", 10_000_000, minimum=1),
+            cache_max_bytes=_integer("TTS_CACHE_MAX_BYTES", 2 * 1024**3, minimum=1024),
+            state_max_bytes=_integer("TTS_STATE_MAX_BYTES", 20 * 1024**3, minimum=1024),
+            retention_seconds=_integer("TTS_RETENTION_SECONDS", 7 * 86400, minimum=60),
         )
 
 
@@ -61,8 +77,9 @@ def _integer(name: str, default: int, *, minimum: int, maximum: int | None = Non
 
 
 def _number(name: str, default: float, *, minimum: float, maximum: float | None = None) -> float:
+    import math
     value = float(os.getenv(name, str(default)))
-    if value < minimum or maximum is not None and value > maximum:
+    if not math.isfinite(value) or value < minimum or maximum is not None and value > maximum:
         raise ValueError(f"{name} is outside the supported range")
     return value
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 import urllib.request
@@ -19,8 +20,8 @@ def main() -> int:
             {
                 "model": "silero-ru-v5.5",
                 "input": (
-                    "Пришло новое сообщение из топика, Проверка, на сервере, toma.\n\n"
-                    "Проверка синтеза речи прошла успешно."
+                    "Пришло новое сообщение из топика, Проверка.\n\n"
+                    "В 2026 году вышло 45 серий. Python, C++ и API работают."
                 ),
                 "voice": "xenia",
                 "response_format": "opus",
@@ -36,8 +37,12 @@ def main() -> int:
     with urllib.request.urlopen(request, timeout=180) as response:
         audio = response.read()
         content_type = response.headers.get_content_type()
+        checksum = response.headers.get("X-Content-SHA256")
+        identifier = response.headers.get("X-TTS-Job-ID")
     if content_type != "audio/ogg" or not audio.startswith(b"OggS") or b"OpusHead" not in audio:
         raise RuntimeError("response is not valid OGG/Opus audio")
+    if not identifier or checksum != hashlib.sha256(audio).hexdigest():
+        raise RuntimeError("response is missing its job identity or failed the SHA-256 check")
     print(f"ok model={health['model']} bytes={len(audio)} content_type={content_type}")
     return 0
 

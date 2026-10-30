@@ -11,6 +11,7 @@ services:
       - "${TTS_BIND_ADDRESS:-127.0.0.1}:${TTS_PORT:-8000}:8000"
     volumes:
       - ${TTS_MODELS_PATH:-silero-models}:/models
+      - ${TTS_DATA_PATH:-silero-state}:/state
     tmpfs:
       - /tmp:size=256m,mode=1777
     read_only: true
@@ -22,3 +23,4 @@ services:
 
 volumes:
   silero-models:
+  silero-state:

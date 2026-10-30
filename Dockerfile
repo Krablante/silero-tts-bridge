@@ -16,15 +16,17 @@ RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.or
 
 COPY app ./app
 COPY scripts ./scripts
+COPY client.py ./client.py
 RUN chmod +x /app/scripts/entrypoint.sh \
     && groupadd --gid 1000 app \
     && useradd --uid 1000 --gid 1000 --create-home app \
-    && mkdir -p /models \
-    && chown -R app:app /app /models
+    && mkdir -p /models /state \
+    && chown -R app:app /app /models /state
 
 USER 1000:1000
 EXPOSE 8000
 VOLUME ["/models"]
+VOLUME ["/state"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
   CMD python -c "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)); raise SystemExit(0 if data.get('status') == 'ok' else 1)"

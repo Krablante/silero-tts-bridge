@@ -1,4 +1,9 @@
 .env
+.env.*
+!.env.example
+*.env
+state/
+client-keys.json
 .venv/
 __pycache__/
 *.py[cod]
