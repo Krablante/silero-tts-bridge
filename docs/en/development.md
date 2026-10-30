@@ -5,13 +5,11 @@
 ## Follow a request
 
 ```mermaid
-flowchart LR
+flowchart TD
     C[HTTP client or CLI] --> A[API and owner]
     A --> S[SQLite jobs and text]
-    S --> W[One fragment scheduler]
-    W --> T[Text preparation]
-    W --> M[One CPU model]
-    M --> F[Lossless FLAC cache]
+    S --> W[Scheduler: prepare text and synthesize one fragment]
+    W --> F[Lossless FLAC cache]
     F --> E[Short and long encoding lanes]
     E --> R[Verified result on disk]
     R --> C

@@ -22,7 +22,9 @@ cd silero-tts-bridge
 cp .env.example .env
 docker compose up -d --wait --wait-timeout 300
 python3 scripts/smoke.py
-python3 client.py speak --text 'В 2026 году Python и C++ получили 45 обновлений.' --format opus -o reply.ogg
+python3 client.py speak \
+  --text 'В 2026 году Python и C++ получили 45 обновлений.' \
+  --format opus -o reply.ogg
 ```
 
 Адрес по умолчанию — `http://127.0.0.1:8000`. Перед подключением других хостов настрой авторизацию и частный HTTPS-маршрут. При обновлении сохраняй том `/state`: в нём исходные тексты, задания и аудио. Подробности — в [руководстве по эксплуатации](docs/ru/operations.md).
@@ -33,7 +35,8 @@ python3 client.py speak --text 'В 2026 году Python и C++ получили 
 curl --fail-with-body http://127.0.0.1:8000/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: first-example' \
-  --data '{"input":"Привет. Проверка 42.","voice":"xenia","response_format":"opus"}' \
+  --data '{"input":"Привет. Проверка 42.",
+           "voice":"xenia","response_format":"opus"}' \
   --output speech.ogg
 ```
 
