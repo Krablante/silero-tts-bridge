@@ -97,8 +97,25 @@ PRAGMA user_version=1;
         self.db.execute("UPDATE jobs SET state='cancelled',error=? WHERE durable=0 AND state IN ('preparing','queued','running','assembling')", (json.dumps({"code": "client_disconnected", "message": "Synchronous caller disconnected during restart"}),))
         self.db.execute("UPDATE jobs SET state='queued',reserved_bytes=0 WHERE state IN ('running','assembling')")
         self.db.commit()
+        self._recover_files()
         self.last_cleanup = 0
         self.cleanup()
+
+    def _recover_files(self):
+        # The exclusive worker lock makes abandoned-file cleanup safe at startup.
+        for path in self.cache.glob("*.flac"):
+            if path.name.endswith(".tmp.flac") or not self.db.execute("SELECT 1 FROM cache WHERE key=?", (path.stem,)).fetchone():
+                path.unlink(missing_ok=True)
+        for directory in self.jobs.iterdir():
+            if directory.is_symlink() or not directory.is_dir() or not directory.name.startswith("tts_") or len(directory.name) != 36:
+                continue
+            row = self.db.execute("SELECT result FROM jobs WHERE id=?", (directory.name,)).fetchone()
+            if not row:
+                shutil.rmtree(directory)
+                continue
+            for path in directory.iterdir():
+                if path.is_file() and (path.name.endswith(".tmp") or path.name.startswith("result.tmp.") or path.name in {"concat.txt", "silence.flac", "encode.log"} or (not row["result"] and path.name in {"result.ogg", "result.mp3", "result.wav"})):
+                    path.unlink(missing_ok=True)
 
     def close(self):
         self.db.close()

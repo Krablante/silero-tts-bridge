@@ -339,6 +339,44 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(rejected.status_code, 507)
             self.assertEqual(FakeEngine.calls, [])
 
+    def test_late_encoding_cancellation_removes_unclaimed_output(self):
+        encoded, release = threading.Event(), threading.Event()
+        original = FakeEngine.assemble
+        def finishing(engine, *args):
+            result = original(engine, *args)
+            encoded.set()
+            release.wait(5)
+            return result
+        with patch.object(FakeEngine, "assemble", finishing), TestClient(main.app) as client:
+            identifier = self.submit(client, "Поздняя отмена готовой сборки.")["id"]
+            self.assertTrue(encoded.wait(5))
+            self.assertEqual(client.delete("/v1/audio/jobs/" + identifier).json()["state"], "cancelled")
+            release.set()
+            until = time.monotonic() + 2
+            directory = Path(self.temp.name) / "jobs" / identifier
+            while list(directory.glob("result.*")) and time.monotonic() < until:
+                time.sleep(.01)
+            self.assertFalse(list(directory.glob("result.*")))
+
+    def test_restart_removes_abandoned_files_and_keeps_completed_artifacts(self):
+        with TestClient(main.app) as client:
+            identifier = self.submit(client, "Готовый результат сохранён.")["id"]
+            self.assertEqual(wait(client, identifier)["state"], "completed")
+        root = Path(self.temp.name)
+        directory = root / "jobs" / identifier
+        (directory / "result.tmp.ogg").write_bytes(b"interrupted output")
+        (directory / "concat.txt").write_text("abandoned assembly")
+        (root / "cache" / ("0" * 64 + ".flac")).write_bytes(b"uncommitted fragment")
+        orphan = root / "jobs" / ("tts_" + "0" * 32)
+        orphan.mkdir()
+        (orphan / "source.txt").write_text("uncommitted source")
+        with TestClient(main.app) as client:
+            self.assertEqual(client.get(f"/v1/audio/jobs/{identifier}/result").status_code, 200)
+            self.assertFalse((directory / "result.tmp.ogg").exists())
+            self.assertFalse((directory / "concat.txt").exists())
+            self.assertFalse((root / "cache" / ("0" * 64 + ".flac")).exists())
+            self.assertFalse(orphan.exists())
+
     def test_batch_encoding_does_not_block_short_answer(self):
         from app.engine import SynthesisError
         entered = threading.Event()

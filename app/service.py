@@ -199,6 +199,8 @@ class SynthesisService:
             if self.store.row(identifier)["state"] == "assembling" and not self.stopping:
                 self.store.update(identifier, state="completed", reserved_bytes=0, result=json.dumps({"bytes": result.size, "sha256": result.sha256, "duration_seconds": result.duration_seconds, "content_type": result.media_type, "extension": result.extension}))
                 LOGGER.info("Speech completed: job=%s segments=%s bytes=%s duration=%.3f", identifier, len(parts), result.size, result.duration_seconds)
+            else:
+                result.path.unlink(missing_ok=True)
         except Exception as error:
             if not self.stopping:
                 self._fail(identifier, error)

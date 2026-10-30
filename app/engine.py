@@ -185,6 +185,8 @@ class SileroEngine:
                         except subprocess.TimeoutExpired:
                             process.kill()
                             process.wait()
+            if cancelled.is_set():
+                raise SynthesisError("cancelled")
             metadata = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_name", "-of", "json", str(temporary)], timeout=30))
             duration = float(metadata["format"]["duration"])
             size = temporary.stat().st_size
@@ -193,6 +195,8 @@ class SileroEngine:
             digest = hashlib.sha256()
             with temporary.open("rb") as stream:
                 while data := stream.read(1024 * 1024):
+                    if cancelled.is_set():
+                        raise SynthesisError("cancelled")
                     digest.update(data)
                 os.fsync(stream.fileno())
             target = directory / ("result." + extension)

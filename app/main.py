@@ -78,7 +78,7 @@ async def lifespan(app):
         await service.close()
 
 
-app = FastAPI(title="Silero TTS Bridge", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Silero TTS Bridge", version="0.2.1", lifespan=lifespan)
 
 
 class BodyLimit:
