@@ -15,6 +15,16 @@ LOGGER = logging.getLogger("silero_tts_bridge.service")
 INTERACTIVE_SECONDS = 300
 
 
+def join_normalized(directory):
+    target = directory / "normalized.txt"
+    with target.with_suffix(".txt.tmp").open("w", encoding="utf-8") as out:
+        for path in sorted(directory.glob("normalized-*.txt")):
+            with path.open(encoding="utf-8") as source:
+                out.write(source.read())
+                out.write("\n\n")
+    target.with_suffix(".txt.tmp").replace(target)
+
+
 def prepare_block(source, offset, options, maximum, signature):
     # Byte offsets survive restarts. Grammar sees sentences/paragraphs rather than tokens.
     with source.open("rb") as stream:
@@ -94,7 +104,7 @@ class SynthesisService:
     def cancel(self, identifier, owner):
         job = self.store.row(identifier, owner)
         if job["state"] in ACTIVE:
-            self.store.update(identifier, state="cancelled", reserved_bytes=0)
+            self.store.update(identifier, state="cancelled")
             if identifier in self.assemblies:
                 self.assemblies[identifier][1].set()
         self.wake.set()
@@ -124,6 +134,7 @@ class SynthesisService:
                 ready = self.store.ready(short, INTERACTIVE_SECONDS)
                 if ready:
                     cancelled = threading.Event()
+                    self.store.protected.add(ready["id"])
                     self.store.update(ready["id"], state="assembling")
                     task = asyncio.create_task(self._assemble(ready, cancelled))
                     self.assemblies[ready["id"]] = (task, cancelled, short)
@@ -137,6 +148,7 @@ class SynthesisService:
                 continue
             self.active = True
             self.current_job = job["id"]
+            self.store.protected.add(job["id"])
             try:
                 self.store.ensure_space()
                 options = self._options(job)
@@ -165,6 +177,7 @@ class SynthesisService:
             finally:
                 self.active = False
                 self.current_job = None
+                self.store.protected.discard(job["id"])
 
     async def _assemble(self, job, cancelled):
         identifier = job["id"]
@@ -176,11 +189,16 @@ class SynthesisService:
                 raise SynthesisError("incomplete_audio: not every fragment is ready")
             parts = []
             for row in rows:
+                if cancelled.is_set():
+                    return
                 if self.store.cached(row["cache_key"]) is None:
-                    self.store.update(identifier, state="queued")
+                    if self.store.row(identifier)["state"] == "assembling":
+                        self.store.update(identifier, state="queued")
                     return
                 parts.append((self.store.cache / (row["cache_key"] + ".flac"), row["frames"]))
                 await asyncio.sleep(0)
+            if cancelled.is_set():
+                return
             duration = (sum(frames for _, frames in parts) / self.settings.sample_rate + (len(parts)-1) * self.settings.silence_seconds) / options["speed"]
             bitrate = self.settings.opus_bitrate.lower()
             opus_bytes = float(bitrate[:-1]) * 125 if bitrate.endswith("k") else float(bitrate) / 8
@@ -189,12 +207,9 @@ class SynthesisService:
             self.store.ensure_space(reservation)
             self.store.update(identifier, reserved_bytes=reservation)
             # Normalized text is an explicit downloadable artifact, never an implicit model response.
-            with (directory / "normalized.txt.tmp").open("w", encoding="utf-8") as out:
-                for path in sorted(directory.glob("normalized-*.txt")):
-                    with path.open(encoding="utf-8") as source:
-                        out.write(source.read())
-                        out.write("\n\n")
-            (directory / "normalized.txt.tmp").replace(directory / "normalized.txt")
+            await asyncio.to_thread(join_normalized, directory)
+            if cancelled.is_set():
+                return
             result = await asyncio.get_running_loop().run_in_executor(self.encoder, self.engine.assemble, parts, directory, options["response_format"], options["speed"], options["max_output_bytes"], cancelled)
             if self.store.row(identifier)["state"] == "assembling" and not self.stopping:
                 self.store.update(identifier, state="completed", reserved_bytes=0, result=json.dumps({"bytes": result.size, "sha256": result.sha256, "duration_seconds": result.duration_seconds, "content_type": result.media_type, "extension": result.extension}))
@@ -205,6 +220,8 @@ class SynthesisService:
             if not self.stopping:
                 self._fail(identifier, error)
         finally:
+            self.store.protected.discard(identifier)
+            self.store.update(identifier, reserved_bytes=0)
             self.wake.set()
 
     def _fail(self, identifier, error):

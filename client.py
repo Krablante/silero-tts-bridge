@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -70,7 +70,7 @@ class Client:
         until = time.monotonic() + timeout
         while job["state"] in {"preparing", "queued", "running", "assembling"}:
             if time.monotonic() >= until:
-                return job
+                raise ValueError("Wait timed out; the durable job is preserved. Use status/wait with ID " + job["id"])
             time.sleep(.5)
             job = self.json("/v1/audio/jobs/" + job["id"])
         return job

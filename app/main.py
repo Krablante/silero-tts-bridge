@@ -47,6 +47,8 @@ class Keys:
             for client, keys in values.items():
                 if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", client):
                     raise RuntimeError("Invalid client name in TTS_KEYS_FILE")
+                if isinstance(keys, list) and not keys:
+                    raise RuntimeError("Each TTS client must have at least one key")
                 for key in keys if isinstance(keys, list) else [keys]:
                     if not isinstance(key, str) or len(key) < 24:
                         raise RuntimeError("Client keys must contain at least 24 characters")
@@ -78,7 +80,7 @@ async def lifespan(app):
         await service.close()
 
 
-app = FastAPI(title="Silero TTS Bridge", version="0.2.1", lifespan=lifespan)
+app = FastAPI(title="Silero TTS Bridge", version="0.2.2", lifespan=lifespan)
 
 
 class BodyLimit:

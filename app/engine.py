@@ -258,11 +258,6 @@ def _split_paragraph(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _normalize_text(text: str) -> str:
-    paragraphs = [" ".join(paragraph.split()) for paragraph in PARAGRAPH_SPLIT_RE.split(text)]
-    return "\n\n".join(paragraph for paragraph in paragraphs if paragraph)
-
-
 def _split_long_segment(text: str, max_chars: int) -> list[str]:
     parts: list[str] = []
     remaining = text.strip()
@@ -272,7 +267,7 @@ def _split_long_segment(text: str, max_chars: int) -> list[str]:
             match.end() for match in CLAUSE_BREAK_RE.finditer(window) if match.end() >= max_chars // 2
         ]
         cut = clause_breaks[-1] if clause_breaks else window.rfind(" ")
-        if cut < max_chars // 2:
+        if cut < 1:
             cut = max_chars
         part = remaining[:cut].strip()
         if not part:

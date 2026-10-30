@@ -52,6 +52,12 @@ def wait(client, identifier, maximum=15):
 
 
 class TextTests(unittest.TestCase):
+    def test_client_wait_timeout_is_an_error_and_versions_match(self):
+        from client import Client, VERSION
+        self.assertEqual(main.app.version, VERSION)
+        with self.assertRaisesRegex(ValueError, "durable job is preserved"):
+            Client().wait({"id": "tts_" + "0" * 32, "state": "queued"}, 0)
+
     def test_numeric_and_technical_content(self):
         text, report = normalize("В 2026 году Python и GPT-4 получили 45 серий. C++, HTML5, № 12, § 3. Формула ω^2 = 4.")
         self.assertNotRegex(text, r"[A-Za-z0-9ω^]")
@@ -85,6 +91,13 @@ class TextTests(unittest.TestCase):
             normalize("Привет 🦊")
         self.assertIn("лиса", normalize("Привет 🦊", lexicon={"🦊": "лиса"})[0])
         self.assertIn("капитал", normalize("capital")[0])
+
+    def test_partition_does_not_split_a_word_after_a_short_prefix(self):
+        from app.engine import _split_text
+        text = "Я " + "а" * 79 + " конец."
+        parts = _split_text(text, 80)
+        self.assertEqual(" ".join(parts), text)
+        self.assertTrue(all(len(part) <= 80 for part in parts))
 
     def test_migrated_userduck_pronunciation_corpus(self):
         # Shared rules moved from Userduck; callers no longer carry this corpus or dependency.
@@ -184,6 +197,40 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(bad.status_code, 422)
             self.assertNotIn("private-book-content", bad.text)
 
+    def test_empty_key_rotation_list_cannot_disable_authentication(self):
+        from app.config import Settings
+        keys = Path(self.temp.name) / "keys.json"
+        keys.write_text(json.dumps({"a": []}))
+        with patch.dict(os.environ, {"TTS_KEYS_FILE": str(keys)}):
+            with self.assertRaisesRegex(RuntimeError, "at least one key"):
+                main.Keys(Settings.from_env())
+
+    def test_resume_obeys_admission_and_waiters_have_independent_lifetimes(self):
+        from dataclasses import replace
+        from app.config import Settings
+        from app.store import Store, JobError
+        store = Store(replace(Settings.from_env(), max_pending=1))
+        try:
+            options = {"voice": "xenia", "speed": 1}
+            old = store.submit("a", options, "Первый текст.", 10000)
+            store.update(old["id"], state="cancelled")
+            active = store.submit("a", options, "Другой текст.", 10000)
+            with self.assertRaises(JobError) as caught:
+                store.resume(old["id"], "a")
+            self.assertEqual(caught.exception.status, 429)
+            self.assertEqual(store.row(old["id"])["state"], "cancelled")
+            store.update(active["id"], state="cancelled")
+            first = store.submit("a", options, "Одинаковый текст.", 10000, durable=False)
+            store.update(first["id"], state="cancelled")
+            second = store.submit("a", options, "Одинаковый текст.", 10000, durable=False)
+            store.settings = replace(store.settings, max_pending=8)
+            third = store.submit("a", options, "Одинаковый текст.", 10000)
+            self.assertNotEqual(second["id"], third["id"])
+            store.update(second["id"], state="cancelled")
+            self.assertEqual(store.row(third["id"])["state"], "preparing")
+        finally:
+            store.close()
+
     def test_cancel_resume_and_restart_preserve_successful_parts(self):
         text = " ".join(f"Раздел {i} содержит несколько отдельных слов для проверки сохранности." for i in range(30))
         with TestClient(main.app) as client:
@@ -223,7 +270,9 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(first["state"], "completed", first)
             before = len(FakeEngine.calls)
             files = list((Path(self.temp.name) / "cache").glob("*.flac"))
-            files[0].write_bytes(b"broken")
+            # Same-size corruption must invalidate the memoized checksum too.
+            data = files[0].read_bytes()
+            files[0].write_bytes(b"broken" + data[6:])
             second = wait(client, self.submit(client, text, response_format="mp3")["id"])
             self.assertEqual(second["state"], "completed", second)
             self.assertEqual(len(FakeEngine.calls), before + 1)
@@ -357,6 +406,46 @@ class BridgeTests(unittest.TestCase):
             while list(directory.glob("result.*")) and time.monotonic() < until:
                 time.sleep(.01)
             self.assertFalse(list(directory.glob("result.*")))
+
+    def test_cancelled_encoder_parts_stay_protected_until_it_stops(self):
+        from app.engine import SynthesisError
+        entered, release = threading.Event(), threading.Event()
+        def blocked(engine, parts, directory, output_format, speed, maximum, cancelled):
+            entered.set()
+            release.wait(5)
+            raise SynthesisError("cancelled")
+        with patch.object(FakeEngine, "assemble", blocked), TestClient(main.app) as client:
+            identifier = self.submit(client, "Отдельная проверка защиты кеша.")["id"]
+            self.assertTrue(entered.wait(5))
+            client.delete("/v1/audio/jobs/" + identifier)
+            store = main.app.state.service.store
+            async def cleanup():
+                with store.db:
+                    store.db.execute("UPDATE cache SET used=0")
+                store.cleanup(force=True)
+                return len(list(store.cache.glob("*.flac")))
+            self.assertGreater(client.portal.call(cleanup), 0)
+            release.set()
+
+    def test_preassembly_cancellation_cannot_requeue_a_job(self):
+        from app.store import Store
+        original = Store.cached
+        cancelled = threading.Event()
+        def cancel_while_validating(store, fingerprint):
+            result = original(store, fingerprint)
+            current = main.app.state.service
+            if current.assemblies and not cancelled.is_set():
+                identifier = next(iter(current.assemblies))
+                current.cancel(identifier, "local")
+                # Reproduce a damaged part detected after explicit cancellation.
+                cancelled.set()
+                return None
+            return result
+        with patch.object(Store, "cached", cancel_while_validating), TestClient(main.app) as client:
+            identifier = self.submit(client, "Отмена перед сборкой.")["id"]
+            self.assertTrue(cancelled.wait(5))
+            time.sleep(.05)
+            self.assertEqual(client.get("/v1/audio/jobs/" + identifier).json()["state"], "cancelled")
 
     def test_restart_removes_abandoned_files_and_keeps_completed_artifacts(self):
         with TestClient(main.app) as client:

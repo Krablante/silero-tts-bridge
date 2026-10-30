@@ -33,6 +33,11 @@ def file_hash(path):
     return value.hexdigest()
 
 
+def file_stamp(path, checksum):
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, checksum)
+
+
 def atomic_text(path, text):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
@@ -49,6 +54,8 @@ def atomic_text(path, text):
 class Store:
     def __init__(self, settings):
         self.settings = settings
+        self.protected = set()
+        self.verified = {}
         self.root = settings.state_path.resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.jobs = self.root / "jobs"
@@ -88,6 +95,7 @@ CREATE TABLE IF NOT EXISTS chunks (
  text TEXT NOT NULL, cache_key TEXT NOT NULL, frames INTEGER, PRIMARY KEY(job_id,n)
 );
 CREATE INDEX IF NOT EXISTS chunks_cache ON chunks(cache_key);
+CREATE INDEX IF NOT EXISTS chunks_pending ON chunks(job_id,n) WHERE frames IS NULL;
 CREATE TABLE IF NOT EXISTS cache (
  key TEXT PRIMARY KEY, frames INTEGER NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, used REAL NOT NULL
 );
@@ -109,8 +117,8 @@ PRAGMA user_version=1;
         for directory in self.jobs.iterdir():
             if directory.is_symlink() or not directory.is_dir() or not directory.name.startswith("tts_") or len(directory.name) != 36:
                 continue
-            row = self.db.execute("SELECT result FROM jobs WHERE id=?", (directory.name,)).fetchone()
-            if not row:
+            row = self.db.execute("SELECT state,result FROM jobs WHERE id=?", (directory.name,)).fetchone()
+            if not row or row["state"] == "expired":
                 shutil.rmtree(directory)
                 continue
             for path in directory.iterdir():
@@ -147,12 +155,9 @@ PRAGMA user_version=1;
                     raise JobError("idempotency_conflict", "Idempotency-Key already belongs to different input or parameters", 409)
                 return dict(existing)
         existing = self.db.execute("SELECT * FROM jobs WHERE owner=? AND request_hash=? AND state IN ('preparing','queued','running','assembling','completed') ORDER BY created DESC LIMIT 1", (owner, request_hash)).fetchone()
-        if existing and not idempotency:
+        if existing and not idempotency and (existing["state"] == "completed" or durable and existing["durable"]):
             return dict(existing)
-        pending = self.db.execute("SELECT count(*),coalesce(sum(characters),0) FROM jobs WHERE state IN ('preparing','queued','running','assembling')").fetchone()
-        own = self.db.execute("SELECT count(*) FROM jobs WHERE owner=? AND state IN ('preparing','queued','running','assembling')", (owner,)).fetchone()[0]
-        if pending[0] >= self.settings.max_pending or own >= max(2, self.settings.max_pending // 2) or pending[1] + len(text) > self.settings.max_queued_chars:
-            raise JobError("queue_full", "Speech queue is full; retry later with the same Idempotency-Key", 429)
+        self.check_capacity(owner, len(text))
         self.ensure_space(len(text.encode()) * 3)
         identifier = "tts_" + uuid4().hex
         directory = self.jobs / identifier
@@ -166,6 +171,12 @@ PRAGMA user_version=1;
             shutil.rmtree(directory)
             raise
         return self.row(identifier)
+
+    def check_capacity(self, owner, characters):
+        pending = self.db.execute("SELECT count(*),coalesce(sum(characters),0) FROM jobs WHERE state IN ('preparing','queued','running','assembling')").fetchone()
+        own = self.db.execute("SELECT count(*) FROM jobs WHERE owner=? AND state IN ('preparing','queued','running','assembling')", (owner,)).fetchone()[0]
+        if pending[0] >= self.settings.max_pending or own >= max(2, self.settings.max_pending // 2) or pending[1] + characters > self.settings.max_queued_chars:
+            raise JobError("queue_full", "Speech queue is full; retry later with the same Idempotency-Key", 429)
 
     def update(self, identifier, **values):
         values["updated"] = time.time()
@@ -199,9 +210,10 @@ PRAGMA user_version=1;
         row = self.db.execute("SELECT * FROM cache WHERE key=?", (fingerprint,)).fetchone()
         path = self.cache / (fingerprint + ".flac")
         if row:
-            if path.is_file() and path.stat().st_size == row["bytes"] and file_hash(path) == row["sha256"]:
-                self.db.execute("UPDATE cache SET used=? WHERE key=?", (time.time(), fingerprint))
-                self.db.commit()
+            if self.verify(path, row["bytes"], row["sha256"]):
+                if time.time() - row["used"] > 60:
+                    self.db.execute("UPDATE cache SET used=? WHERE key=?", (time.time(), fingerprint))
+                    self.db.commit()
                 return row["frames"]
         # Corrupt or evicted parts are regenerated individually, including other job references.
         with self.db:
@@ -211,12 +223,29 @@ PRAGMA user_version=1;
             for item in affected:
                 self.db.execute("UPDATE jobs SET done=(SELECT count(*) FROM chunks WHERE job_id=jobs.id AND frames IS NOT NULL) WHERE id=?", (item[0],))
         path.unlink(missing_ok=True)
+        self.verified.pop(path, None)
         return None
+
+    def verify(self, path, size, checksum):
+        try:
+            stamp = file_stamp(path, checksum)
+        except FileNotFoundError:
+            return False
+        if stamp[2] != size:
+            return False
+        if self.verified.get(path) != stamp:
+            if file_hash(path) != checksum:
+                return False
+            self.verified[path] = stamp
+        return True
 
     def chunk_done(self, job, chunk, frames, was_cached):
         path = self.cache / (chunk["cache_key"] + ".flac")
         with self.db:
-            self.db.execute("INSERT OR REPLACE INTO cache VALUES(?,?,?,?,?)", (chunk["cache_key"], frames, path.stat().st_size, file_hash(path), time.time()))
+            if not was_cached:
+                checksum, size = file_hash(path), path.stat().st_size
+                self.db.execute("INSERT OR REPLACE INTO cache VALUES(?,?,?,?,?)", (chunk["cache_key"], frames, size, checksum, time.time()))
+                self.verified[path] = file_stamp(path, checksum)
             if self.row(job["id"])["state"] not in ACTIVE:
                 return
             self.db.execute("UPDATE chunks SET frames=? WHERE job_id=? AND n=?", (frames, job["id"], chunk["n"]))
@@ -234,8 +263,9 @@ PRAGMA user_version=1;
             raise JobError("expired", "Job artifacts expired; submit the source again", 410)
         if job["state"] not in {"failed", "cancelled"}:
             return job
-        for row in self.db.execute("SELECT cache_key FROM chunks WHERE job_id=? AND frames IS NOT NULL", (identifier,)).fetchall():
-            self.cached(row[0])
+        self.check_capacity(owner, job["characters"])
+        # Assembly validates every saved fragment and requeues damaged parts.
+        # Do not scan a whole book inside the HTTP resume handler.
         state = "queued" if job["prepared_offset"] >= job["source_bytes"] else "preparing"
         self.update(identifier, state=state, error=None, served=time.time(), durable=1)
         return self.row(identifier)
@@ -270,10 +300,10 @@ PRAGMA user_version=1;
     def expire(self, identifier):
         options = json.loads(self.row(identifier)["options"])
         intent = {k: v for k, v in options.items() if k not in {"lexicon", "_engine", "_normalizer", "_render"}}
-        shutil.rmtree(self.jobs / identifier, ignore_errors=False) if (self.jobs / identifier).exists() else None
         with self.db:
-            self.db.execute("UPDATE jobs SET state='expired',result=NULL,report='{}',source_bytes=0,normalized_bytes=0,reserved_bytes=0,options=? WHERE id=?", (json.dumps(intent), identifier))
+            self.db.execute("UPDATE jobs SET state='expired',result=NULL,report='{}',source_bytes=0,normalized_bytes=0,reserved_bytes=0,options=?,updated=? WHERE id=?", (json.dumps(intent), time.time(), identifier))
             self.db.execute("DELETE FROM chunks WHERE job_id=?", (identifier,))
+        shutil.rmtree(self.jobs / identifier, ignore_errors=False) if (self.jobs / identifier).exists() else None
 
     def cleanup(self, force=False):
         now = time.time()
@@ -282,13 +312,18 @@ PRAGMA user_version=1;
         self.last_cleanup = now
         cutoff = now - self.settings.retention_seconds
         for job in self.db.execute("SELECT id FROM jobs WHERE state IN ('completed','failed','cancelled') AND updated<?", (cutoff,)).fetchall():
-            self.expire(job["id"])
+            if job["id"] not in self.protected:
+                self.expire(job["id"])
         total = self.db.execute("SELECT coalesce(sum(bytes),0) FROM cache").fetchone()[0]
-        candidates = self.db.execute("SELECT * FROM cache c WHERE NOT EXISTS(SELECT 1 FROM chunks ch JOIN jobs j ON j.id=ch.job_id WHERE ch.cache_key=c.key AND j.state IN ('preparing','queued','running','assembling')) ORDER BY used").fetchall()
+        pins = tuple(self.protected)
+        placeholders = ",".join("?" for _ in pins) or "NULL"
+        candidates = self.db.execute(f"SELECT * FROM cache c WHERE NOT EXISTS(SELECT 1 FROM chunks ch JOIN jobs j ON j.id=ch.job_id WHERE ch.cache_key=c.key AND (j.state IN ('preparing','queued','running','assembling') OR j.id IN ({placeholders}))) ORDER BY used", pins).fetchall()
         for row in candidates:
             if row["used"] >= cutoff and total <= self.settings.cache_max_bytes:
                 continue
-            (self.cache / (row["key"] + ".flac")).unlink(missing_ok=True)
+            path = self.cache / (row["key"] + ".flac")
+            path.unlink(missing_ok=True)
+            self.verified.pop(path, None)
             self.db.execute("DELETE FROM cache WHERE key=?", (row["key"],))
             total -= row["bytes"]
         retained = self.db.execute("SELECT coalesce(sum(coalesce(json_extract(result,'$.bytes'),0)),0) FROM jobs WHERE state='completed'").fetchone()[0]
