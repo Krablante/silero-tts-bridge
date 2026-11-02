@@ -7,7 +7,8 @@ from datetime import date
 
 from rutextnorm import normalize_russian, number_to_ordinal_words, number_to_words, number_to_words_case, flag_uncertain
 
-VERSION = "ru-bridge-1"
+VERSION = "ru-bridge-2"
+PROSODY = re.compile(r"(?<![а-яё+*\-])(\*{1,2})([а-яё+]+(?:-[а-яё+]+)*)\1(?![а-яё+*\-])", re.I)
 DIGITS = ("ноль", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять")
 MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря")
 PLACES = ("десят", "сот", "тысячн", "десятитысячн", "стотысячн", "миллионн")
@@ -179,15 +180,17 @@ def normalize(text: str, mode="auto", lexicon=None):
         for symbol, spoken in SYMBOLS.items():
             text = text.replace(symbol, spoken)
         # '+' is a native stress marker only immediately before a Cyrillic vowel.
-        text = re.sub(r"(?<![а-яё])\+|\+(?![аеёиоуыэюя])", " плюс ", text, flags=re.I)
+        text = re.sub(r"\+(?![аеёиоуыэюя])", " плюс ", text, flags=re.I)
     elif mode != "prepared":
         raise TextError("invalid_text_mode", "text_mode must be auto or prepared")
-    elif re.search(r"(?<![а-яё])\+|\+(?![аеёиоуыэюя])", text, flags=re.I):
+    elif re.search(r"\+(?![аеёиоуыэюя])", text, flags=re.I):
         raise TextError("invalid_stress", "Prepared text may use '+' only as a stress marker before a Cyrillic vowel")
+    if mode == "prepared" and "*" in PROSODY.sub(r"\2", text):
+        raise TextError("invalid_prosody", "Wrap one complete Russian word in *word* for question focus or **word** for emphasis; put punctuation outside the markers")
     text = text.translate(str.maketrans({"«": '"', "»": '"', "“": '"', "”": '"', "’": "'", "–": "-", "—": "-"}))
     # These punctuation marks may be discarded by the acoustic model; no lexical content is removed.
     text = re.sub(r'''[()\[\]{}"']''', " ", text)
-    issues = [{"offset": m.start(), "codepoint": f"U+{ord(m[0]):04X}"} for m in re.finditer(r"[^а-яёА-ЯЁ\s.,!?:;…+\-]", text)]
+    issues = [{"offset": m.start(), "codepoint": f"U+{ord(m[0]):04X}"} for m in re.finditer(r"[^а-яёА-ЯЁ\s.,!?:;…+*\-]", text)]
     if issues:
         raise TextError("unsupported_text", "Text contains unsupported characters after preparation; supply lexicon pronunciations", issues[:16])
     paragraphs = [" ".join(p.split()) for p in re.split(r"\n\s*\n+", text)]

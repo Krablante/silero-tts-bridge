@@ -10,7 +10,7 @@ All `/v1` routes use optional `Authorization: Bearer <key>`. Keys select the job
 
 ```json
 {
-  "model":"silero-ru-v5.5",
+  "model":"silero-ru-v5.6",
   "input":"В 2026 году вышло 45 серий. Python и GPT-4.",
   "voice":"xenia",
   "response_format":"opus",
@@ -21,6 +21,8 @@ All `/v1` routes use optional `Authorization: Bearer <key>`. Keys select the job
 ```
 
 Only `input` is required. Voices are `xenia`, `eugene`, `aidar`, `baya`, `kseniya`; formats are `mp3` (default), `opus`/`ogg`, `wav`; speed is 0.25–4 with pitch preserved. `text_mode` is `auto` or `prepared`. A lexicon accepts up to 256 entries, each with a nonempty source up to 200 characters and pronunciation up to 500. Unknown fields are rejected. [Text preparation](usage.md) explains pronunciation and validation.
+
+The default model is `silero-ru-v5.6`; any explicitly supplied ID must match it. In prepared text, `*завтра*` selects question focus and `**важно**` adds emphasis. Each marked span must be one complete Russian word, with punctuation outside the stars. `auto` does not interpret Markdown as intonation instructions.
 
 Send a stable `Idempotency-Key` of 1–200 visible ASCII characters when retrying. A repeated key recovers the same job, including its failure/expiration; changed input or parameters returns 409. This is scoped to the owner. Keep the same key after a lost response or 429/502/503/504. Do not automatically retry ordinary non-idempotent synchronous submissions after an uncertain transport failure.
 

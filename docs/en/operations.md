@@ -51,7 +51,9 @@ docker compose up -d --wait --wait-timeout 300
 python3 scripts/smoke.py
 ```
 
-Use the same `--env-file` on every Compose command when configured. Change the pinned `TTS_IMAGE` deliberately before pulling a release. For the smoke check, set `TTS_BASE_URL` to the server root (without `/v1`) and `TTS_API_KEY` when authenticated. The check synthesizes a short synthetic passage and validates its Opus signature, job ID and SHA-256.
+Use the same `--env-file` on every Compose command when configured. Change the pinned `TTS_IMAGE` deliberately before pulling a release. For the smoke check, set `TTS_BASE_URL` to the server root (without `/v1`) and `TTS_API_KEY` when authenticated. The check covers ordinary normalization and prepared intonation with all five voices, validates Opus/model/job identity and SHA-256, then purges its own jobs.
+
+For a model update, let active jobs finish first. Update any explicit `SILERO_MODEL_PATH`, `SILERO_MODEL_URL` and `SILERO_MODEL_SHA256` together with the image; current values are in `.env.example`. Update CLI installations and clients that explicitly send `model` to `silero-ru-v5.6`. The server accepts only the current model ID. Finished audio remains downloadable with its saved model identity; unfinished work from another model or normalizer requires a fresh request/key. After checking the new deployment, remove unused older model weights from `/models`; keep `/state`.
 
 Run **one Uvicorn worker**. An exclusive state lock rejects a second process. Two effective PyTorch threads are the default; they are applied after model loading and reported by `/healthz`. Measure on your hardware before increasing them.
 
@@ -67,6 +69,7 @@ Back up the whole private state directory or volume with the service stopped, in
 | Model reports one thread | Use `/healthz`; ensure the running image matches the release and `SILERO_CPU_THREADS` |
 | 429 on submit/resume | Wait and retry with the same key; inspect active jobs before raising capacity |
 | `unsupported_text` | Inspect the affected prepared block; add a pronunciation or submit a prepared spoken copy |
+| `invalid_prosody` | Mark one complete word with matching stars in prepared mode; keep punctuation outside |
 | `configuration_changed` | Restore the recorded model/normalization/render settings or submit a new request/key |
 | 507 / `storage_limit` | Check disk and storage budget; purge disposable terminal jobs, then resume |
 | Expired/missing result | Re-submit source with a new key; CLI `--refresh` does this explicitly |

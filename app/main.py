@@ -80,7 +80,7 @@ async def lifespan(app):
         await service.close()
 
 
-app = FastAPI(title="Silero TTS Bridge", version="0.2.2", lifespan=lifespan)
+app = FastAPI(title="Silero TTS Bridge", version="0.3.0", lifespan=lifespan)
 
 
 class BodyLimit:
@@ -206,7 +206,7 @@ def result_response(current, job):
     path = current.store.directory(job["id"]) / ("result." + metadata["extension"])
     if not path.is_file() or path.stat().st_size != metadata["bytes"]:
         raise JobError("result_unavailable", "Saved audio result is unavailable", 410)
-    return FileResponse(path, media_type=metadata["content_type"], filename="speech." + metadata["extension"], headers={"X-TTS-Job-ID": job["id"], "X-Audio-Duration": f"{metadata['duration_seconds']:.3f}", "X-TTS-Model": MODEL_ID, "X-Content-SHA256": metadata["sha256"], "ETag": '"' + metadata["sha256"] + '"', "Cache-Control": "private, no-cache"})
+    return FileResponse(path, media_type=metadata["content_type"], filename="speech." + metadata["extension"], headers={"X-TTS-Job-ID": job["id"], "X-Audio-Duration": f"{metadata['duration_seconds']:.3f}", "X-TTS-Model": json.loads(job["options"])["model"], "X-Content-SHA256": metadata["sha256"], "ETag": '"' + metadata["sha256"] + '"', "Cache-Control": "private, no-cache"})
 
 
 @app.get("/v1/audio/jobs/{identifier}/result")

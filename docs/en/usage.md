@@ -60,6 +60,15 @@ Supply special pronunciations with `--lexicon pronunciations.json`, containing, 
 
 Use `--text-mode prepared` for an already spoken Russian copy, including native stress markers such as `к+ошка`. Digits, Latin letters and other unsupported characters must still pass validation. Unsupported content stops synthesis with a clear error; supply a pronunciation instead of deleting it silently.
 
+Silero v5.6 uses `?` and `!` for question and exclamation intonation. In `prepared` mode, wrap one complete Russian word in `*word*` to select the center of a question, or `**word**` for emphasis. Stress markers can appear inside that word. Put punctuation outside the stars; unpaired markers and marked phrases fail with `invalid_prosody`.
+
+```sh
+python3 client.py speak --text 'Это **важно**! Ты *завтра* придёшь?' \
+  --text-mode prepared --voice xenia --format opus -o expressive.ogg
+```
+
+`auto` remains the mode for ordinary text, including Markdown; it does not interpret stars as voice instructions. The model already includes the updated Russian stress and homograph processing; no separate accentor installation is needed.
+
 The bridge preserves addresses and lexical content. The application decides whether to omit links, email or other material before submission. Document extraction, content selection and publishing belong to that application. Formatting punctuation can be simplified for speech.
 
 Partition checks preserve every word of the prepared text; the acoustic model's preparation is checked for removed letters. Finite, non-silent samples and complete output duration are also checked. These checks do not prove the pronunciation or interpretation of every name. The bridge calls neither ASR nor an LLM.

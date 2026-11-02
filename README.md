@@ -4,7 +4,7 @@
 
 **Russian speech for short replies and whole books, served by one CPU model.** The bridge prepares text, saves progress and shares synthesis time between applications. A book keeps moving while a short reply gets its turn.
 
-Use the OpenAI-compatible binary API for an existing speech client, or submit a durable job from the included CLI. Both use the same Silero v5.5 model, pronunciation rules and lossless fragment cache. Clients need Python 3.10+; they need neither PyTorch nor FFmpeg.
+Use the OpenAI-compatible binary API for an existing speech client, or submit a durable job from the included CLI. Both use the same Silero v5.6 model, pronunciation rules and lossless fragment cache. Clients need Python 3.10+; they need neither PyTorch nor FFmpeg.
 
 ```sh
 python3 client.py speak book.txt --voice kseniya --format opus -o book.ogg
@@ -41,6 +41,8 @@ curl --fail-with-body http://127.0.0.1:8000/v1/audio/speech \
 ```
 
 Choose `xenia`, `eugene`, `aidar`, `baya` or `kseniya`; produce MP3, OGG/Opus or WAV at 0.25–4× speed. For long text, `POST /v1/audio/jobs` returns an ID immediately. Saved progress survives service restarts, and stable request keys recover the same job after a lost response.
+
+The model restores Russian stress and `ё` and uses question and exclamation intonation. In prepared Russian speech, mark one word with `*word*` for question focus or `**word**` for emphasis. See [text preparation](docs/en/usage.md).
 
 Numbers, dates, money and technical names are prepared centrally. Original and prepared text stay inspectable, and a per-request pronunciation dictionary handles special names. Unsupported text fails explicitly. File integrity and complete partitioning are checked; correct pronunciation of every word is not guaranteed.
 

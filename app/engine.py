@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from .config import Settings, VOICES
+from .config import MODEL_ID, Settings, VOICES
 
 
 LOGGER = logging.getLogger("silero_tts_bridge.engine")
@@ -73,7 +73,8 @@ class SileroEngine:
         if missing:
             LOGGER.warning("Configured voices absent from model: %s", ",".join(sorted(missing)))
         LOGGER.info(
-            "Silero loaded: model=v5_5_ru device=cpu sample_rate=%s threads=%s",
+            "Silero loaded: model=%s device=cpu sample_rate=%s threads=%s",
+            MODEL_ID,
             self.settings.sample_rate,
             torch.get_num_threads(),
         )

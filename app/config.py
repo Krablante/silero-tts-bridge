@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MODEL_ID = "silero-ru-v5.5"
+MODEL_ID = "silero-ru-v5.6"
 VOICES = ("xenia", "eugene", "aidar", "baya", "kseniya")
 
 
@@ -40,10 +40,10 @@ class Settings:
     def from_env(cls) -> "Settings":
         return cls(
             api_key=os.getenv("TTS_API_KEY", "").strip(),
-            model_path=Path(os.getenv("SILERO_MODEL_PATH", "/models/v5_5_ru.pt")),
+            model_path=Path(os.getenv("SILERO_MODEL_PATH", "/models/v5_6_ru.pt")),
             model_sha256=os.getenv(
                 "SILERO_MODEL_SHA256",
-                "50081637b602126ee06cb3bc8a744d25651d2da149ee8864b9a379bfdd934437",
+                "04cc9b1d08ce38bcaa9d02c488d80d3e6806d17f7eaa7c95982f36a3cbf50b2e",
             ).strip().lower(),
             max_input_chars=_integer("TTS_MAX_INPUT_CHARS", 12_000, minimum=1),
             max_pending=_integer("TTS_MAX_PENDING", 8, minimum=1),

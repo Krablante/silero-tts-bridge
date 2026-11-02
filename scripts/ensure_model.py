@@ -8,8 +8,8 @@ import urllib.request
 from pathlib import Path
 
 
-DEFAULT_URL = "https://models.silero.ai/models/tts/ru/v5_5_ru.pt"
-DEFAULT_SHA256 = "50081637b602126ee06cb3bc8a744d25651d2da149ee8864b9a379bfdd934437"
+DEFAULT_URL = "https://models.silero.ai/models/tts/ru/v5_6_ru.pt"
+DEFAULT_SHA256 = "04cc9b1d08ce38bcaa9d02c488d80d3e6806d17f7eaa7c95982f36a3cbf50b2e"
 
 
 def digest(path: Path) -> str:
@@ -21,7 +21,7 @@ def digest(path: Path) -> str:
 
 
 def main() -> int:
-    target = Path(os.getenv("SILERO_MODEL_PATH", "/models/v5_5_ru.pt"))
+    target = Path(os.getenv("SILERO_MODEL_PATH", "/models/v5_6_ru.pt"))
     expected = os.getenv("SILERO_MODEL_SHA256", DEFAULT_SHA256).strip().lower()
     url = os.getenv("SILERO_MODEL_URL", DEFAULT_URL).strip()
     target.parent.mkdir(parents=True, exist_ok=True)

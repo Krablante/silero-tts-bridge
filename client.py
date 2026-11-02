@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
-VERSION = "0.2.2"
+VERSION = "0.3.0"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -140,7 +140,7 @@ def main(argv=None):
     speak.add_argument("--voice", default="xenia")
     speak.add_argument("--format", choices=["mp3", "opus", "ogg", "wav"], default="mp3")
     speak.add_argument("--speed", type=float, default=1)
-    speak.add_argument("--text-mode", choices=["auto", "prepared"], default="auto")
+    speak.add_argument("--text-mode", choices=["auto", "prepared"], default="auto", help="auto prepares ordinary text; prepared accepts Russian speech with +stress, *question focus* and **emphasis** on individual words")
     speak.add_argument("--lexicon", help="JSON object containing explicit pronunciations")
     speak.add_argument("--encoding", default="utf-8-sig")
     speak.add_argument("--no-wait", action="store_true")
@@ -185,7 +185,7 @@ def main(argv=None):
             if len(data) > 64 * 1024**2:
                 raise ValueError("Text input exceeds 64 MiB")
             text = data.decode(args.encoding, errors="strict")
-        payload = {"model": "silero-ru-v5.5", "input": text, "voice": args.voice, "response_format": args.format, "speed": args.speed, "text_mode": args.text_mode}
+        payload = {"model": "silero-ru-v5.6", "input": text, "voice": args.voice, "response_format": args.format, "speed": args.speed, "text_mode": args.text_mode}
         if args.lexicon:
             payload["lexicon"] = json.loads(Path(args.lexicon).read_text())
         fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

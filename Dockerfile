@@ -3,7 +3,7 @@ FROM python:3.13-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    SILERO_MODEL_PATH=/models/v5_5_ru.pt
+    SILERO_MODEL_PATH=/models/v5_6_ru.pt
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates ffmpeg \

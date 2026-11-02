@@ -63,7 +63,7 @@ class TextTests(unittest.TestCase):
         self.assertNotRegex(text, r"[A-Za-z0-9ω^]")
         for token in ("пайтон", "четыре", "сорок пять", "плюс плюс", "параграф три", "омега", "в степени"):
             self.assertIn(token, text)
-        self.assertEqual(report["version"], "ru-bridge-1")
+        self.assertEqual(report["version"], "ru-bridge-2")
         scientific = normalize("Коэффициент 1.2e-9.")[0]
         self.assertIn("в степени минус девять", scientific)
         self.assertNotRegex(scientific, r"[A-Za-z0-9]")
@@ -91,6 +91,23 @@ class TextTests(unittest.TestCase):
             normalize("Привет 🦊")
         self.assertIn("лиса", normalize("Привет 🦊", lexicon={"🦊": "лиса"})[0])
         self.assertIn("капитал", normalize("capital")[0])
+
+    def test_prepared_prosody_preserves_words_and_rejects_broken_markup(self):
+        from app.engine import _split_text
+        source = "Это **+очень** важно! Ты *завтра* придёшь? **По-настоящему**."
+        self.assertEqual(normalize(source, "prepared")[0], source)
+        self.assertEqual(" ".join(_split_text(source, 30)), source)
+        self.assertEqual(normalize("+Это к+ошка.", "prepared")[0], "+Это к+ошка.")
+        for bad in ("**два слова**", "*завтра**", "***важно***", "сло**во**", "**важно!**", "*важно", "важно*", "* *"):
+            with self.subTest(bad=bad), self.assertRaises(TextError) as caught:
+                normalize(bad, "prepared")
+            self.assertEqual(caught.exception.code, "invalid_prosody")
+        with self.assertRaises(TextError) as caught:
+            normalize("**в+ажно** и плюс +.", "prepared")
+        self.assertEqual(caught.exception.code, "invalid_stress")
+        # Ordinary Markdown remains content, not an implicit instruction to the voice.
+        self.assertEqual(normalize("Это **очень** важно!")[0], "Это очень важно!")
+        self.assertNotIn("*", normalize("Ты *завтра* придёшь?")[0])
 
     def test_partition_does_not_split_a_word_after_a_short_prefix(self):
         from app.engine import _split_text
@@ -184,6 +201,42 @@ class BridgeTests(unittest.TestCase):
             ranged = client.get(f"/v1/audio/jobs/{identifier}/result", headers={"Range": "bytes=0-3"})
             self.assertEqual(ranged.status_code, 206)
             self.assertEqual(ranged.content, b"OggS")
+
+    def test_prepared_prosody_reaches_model_and_remains_distinct_in_cache(self):
+        with TestClient(main.app) as client:
+            marked = "Это **важно**!\n\nТы *завтра* придёшь?"
+            first = wait(client, self.submit(client, marked, text_mode="prepared")["id"])
+            self.assertEqual(first["state"], "completed", first)
+            self.assertEqual(FakeEngine.calls, marked.split("\n\n"))
+            before = len(FakeEngine.calls)
+            plain = wait(client, self.submit(client, "Это важно!\n\nТы завтра придёшь?", text_mode="prepared")["id"])
+            self.assertEqual(plain["progress"]["cached_segments"], 0)
+            self.assertEqual(len(FakeEngine.calls), before + 2)
+            broken = wait(client, self.submit(client, "Это **два слова**.", text_mode="prepared")["id"])
+            self.assertEqual(broken["error"]["code"], "invalid_prosody")
+            self.assertEqual(len(FakeEngine.calls), before + 2)
+
+    def test_model_update_keeps_finished_audio_and_rejects_incompatible_work(self):
+        with patch.object(main, "MODEL_ID", "previous-model"), patch.dict(os.environ, {"SILERO_MODEL_SHA256": "0" * 64}), TestClient(main.app) as client:
+            finished = wait(client, self.submit(client, "Готовая озвучка.", model="previous-model")["id"])
+            with patch.object(FakeEngine, "segment", side_effect=RuntimeError("interrupted")):
+                unfinished = wait(client, self.submit(client, "Незавершённая озвучка.", model="previous-model")["id"])
+            self.assertEqual(finished["state"], "completed", finished)
+            self.assertEqual(unfinished["state"], "failed", unfinished)
+        before = len(FakeEngine.calls)
+        with TestClient(main.app) as client:
+            saved = client.get(f"/v1/audio/jobs/{finished['id']}/result")
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved.headers["x-tts-model"], "previous-model")
+            self.assertEqual(client.post(f"/v1/audio/jobs/{unfinished['id']}/resume").status_code, 200)
+            incompatible = wait(client, unfinished["id"])
+            self.assertEqual(incompatible["error"]["code"], "configuration_changed")
+            self.assertEqual(len(FakeEngine.calls), before)
+            fresh = wait(client, self.submit(client, "Готовая озвучка.")["id"])
+            self.assertEqual(fresh["state"], "completed", fresh)
+            self.assertEqual(fresh["progress"]["cached_segments"], 0)
+            rejected = client.post("/v1/audio/jobs", json={"input": "Проверка.", "model": "previous-model"})
+            self.assertEqual(rejected.status_code, 400)
 
     def test_client_ownership_and_safe_validation(self):
         keys = Path(self.temp.name) / "keys.json"
