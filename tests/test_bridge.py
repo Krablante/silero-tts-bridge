@@ -63,7 +63,7 @@ class TextTests(unittest.TestCase):
         self.assertNotRegex(text, r"[A-Za-z0-9ω^]")
         for token in ("пайтон", "четыре", "сорок пять", "плюс плюс", "параграф три", "омега", "в степени"):
             self.assertIn(token, text)
-        self.assertEqual(report["version"], "ru-bridge-2")
+        self.assertEqual(report["version"], "ru-bridge-3")
         scientific = normalize("Коэффициент 1.2e-9.")[0]
         self.assertIn("в степени минус девять", scientific)
         self.assertNotRegex(scientific, r"[A-Za-z0-9]")
@@ -85,6 +85,26 @@ class TextTests(unittest.TestCase):
         self.assertIn("пятьсот сорок три рубля двадцать одна копейка", text)
         self.assertIn("ноль запятая ноль ноль ноль ноль ноль ноль ноль ноль один", text)
         self.assertIn("ноль ноль ноль семь", text)
+
+    def test_governed_numbers_keep_prepositions_and_real_measurement_units(self):
+        cases = {
+            "до 1917 в России": "до тысячи девятисот семнадцати в России",
+            "после 5 в школе": "после пяти в школе",
+            "до 5 а затем": "до пяти а затем",
+            "до 5 В": "до пяти вольт",
+            "до 5 кВ": "до пяти киловольт",
+            "до 5 А": "до пяти ампер",
+            "до 5 км": "до пяти километров",
+            "до 5 КМ": "до пяти километров",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(normalize(source)[0], expected)
+                self.assertEqual(normalize(expected)[0], expected)
+        text = normalize("Рост до 22 900 в 2024-м и до 5 В на выходе.")[0]
+        self.assertIn("до двадцати двух тысяч девятисот в", text)
+        self.assertEqual(text.count("вольт"), 1)
+        self.assertNotRegex(text, r"[0-9]")
 
     def test_unsupported_input_and_lexicon(self):
         with self.assertRaises(TextError):
@@ -184,6 +204,18 @@ class BridgeTests(unittest.TestCase):
         response = client.post("/v1/audio/jobs", json={"input": text, "response_format": "opus", **values})
         self.assertEqual(response.status_code, 202, response.text)
         return response.json()
+
+    def test_durable_speech_prepares_number_followed_by_preposition(self):
+        with TestClient(main.app) as client:
+            job = self.submit(client, "Рост до 22 900 в 2024-м. Напряжение до 5 В.", voice="aidar")
+            result = wait(client, job["id"])
+            self.assertEqual(result["state"], "completed", result.get("error"))
+            self.assertGreater(result["progress"]["completed_segments"], 0)
+            self.assertIn("до двадцати двух тысяч девятисот в", " ".join(FakeEngine.calls))
+            audio = client.get("/v1/audio/jobs/" + job["id"] + "/result")
+            self.assertEqual(audio.status_code, 200)
+            self.assertTrue(audio.content.startswith(b"OggS"))
+            self.assertIn(b"OpusHead", audio.content[:4096])
 
     def test_binary_api_idempotency_and_range(self):
         with TestClient(main.app) as client:

@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

@@ -34,6 +34,8 @@ Successful fragments are atomically renamed before their database checkpoint. Ca
 
 Protected in-flight work is retained until its thread stops, even after cancellation. Final assembly streams ordered lossless parts and pauses through one output encoding, verifies duration/size and hashes the result. It never builds the whole book waveform in RAM. Restart cleanup removes uncommitted temporary artifacts. The SQLite schema is internal; preserve complete state and use the service API instead of manual database edits.
 
+The normalizer in `app/rutextnorm.py` vendors rutextnorm 2.1.0 with its original MIT license and vocabulary attribution at the top of the file. Shared rule fixes have regressions in `tests/test_bridge.py`. Governed numbers preserve the function words «в» and «а» rather than confusing them with the units «В» and «А»; longer unit names such as «КМ» accept case aliases. Increment `app/text.py:VERSION` when speech preparation changes so unfinished jobs and cached fragments cannot mix different rules. Resubmit an older job's saved source with a new key without generating its answer again.
+
 ## Run checks
 
 Use Python 3.13 for parity with the image/CI and install FFmpeg/ffprobe. The contract suite does not need PyTorch, weights or external services:

@@ -5,9 +5,9 @@ import re
 import unicodedata
 from datetime import date
 
-from rutextnorm import normalize_russian, number_to_ordinal_words, number_to_words, number_to_words_case, flag_uncertain
+from .rutextnorm import normalize_russian, number_to_ordinal_words, number_to_words, number_to_words_case, flag_uncertain
 
-VERSION = "ru-bridge-2"
+VERSION = "ru-bridge-3"
 PROSODY = re.compile(r"(?<![а-яё+*\-])(\*{1,2})([а-яё+]+(?:-[а-яё+]+)*)\1(?![а-яё+*\-])", re.I)
 DIGITS = ("ноль", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять")
 MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря")
